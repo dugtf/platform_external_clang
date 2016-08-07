@@ -1187,8 +1187,9 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
   if (emission.IsByRef)
     emitByrefStructureInit(emission);
 
-  if (isTrivialInitializer(Init))
-    return;
+  bool trivial = isTrivialInitializer(Init);
+  if (trivial && !getLangOpts().Sanitize.has(SanitizerKind::LocalInit))
+      return;
 
   // Check whether this is a byref variable that's potentially
   // captured and moved by its own initializer.  If so, we'll need to
@@ -1198,8 +1199,15 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
   Address Loc =
     capturedByInit ? emission.Addr : emission.getObjectAddress(*this);
 
+  bool constantAggregate = emission.IsConstantAggregate;
+
   llvm::Constant *constant = nullptr;
-  if (emission.IsConstantAggregate || D.isConstexpr()) {
+  if (trivial) {
+    QualType Ty = D.getType();
+    constant = CGM.EmitNullConstant(Ty);
+    if (Ty->isArrayType() || Ty->isRecordType())
+        constantAggregate = true;
+  } else if (emission.IsConstantAggregate || D.isConstexpr()) {
     assert(!capturedByInit && "constant init contains a capturing block?");
     constant = CGM.EmitConstantInit(D, this);
   }
@@ -1210,7 +1218,7 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
     return EmitExprAsInit(Init, &D, lv, capturedByInit);
   }
 
-  if (!emission.IsConstantAggregate) {
+  if (!constantAggregate) {
     // For simple scalar/complex initialization, store the value directly.
     LValue lv = MakeAddrLValue(Loc, type);
     lv.setNonGC(true);
